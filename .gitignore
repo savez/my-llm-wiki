@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local agent state (mechanisms, not content)
+.claude/
+.opencode/
+.codex/
+
+# Local env
+.env
+.env.local
