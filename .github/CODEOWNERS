@@ -1,0 +1,6 @@
+# Code owners for this repo.
+# Every PR auto-requests review from the owners listed below.
+# Combined with branch protection ("Require review from Code Owners"),
+# this enforces that only @savez can approve merges to main.
+
+*       @savez
