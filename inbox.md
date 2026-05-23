@@ -1,8 +1,18 @@
 # Inbox
 
-Coda di URL da fetchare. Tu aggiungi, la skill `inbox-fetcher` elabora con il trigger "process inbox" / "fetcha inbox".
+Coda di URL e feed RSS/Atom da fetchare. Tu aggiungi, la skill `inbox-fetcher` elabora con il trigger "elabora inbox" / "fetcha inbox" / "polla i feed".
 
-Formato: una riga per URL, opzionalmente preceduta da `- [ ]`. Una volta processato, il fetcher lo marca con `- [x]` e salva il risultato in `raw/web/<slug>/`.
+Formato:
+
+- URL singoli: `- [ ] <url>` sotto `## Da processare`. Una volta processato, il fetcher lo marca `- [x]` e salva il risultato in `raw/web/<slug>/` o `raw/papers/<slug>.pdf`.
+- Feed: `- feed: <url-feed>` sotto `## Feeds`. La skill polla periodicamente, segue i redirect del link di ogni nuovo item, e appende l'URL canonico sotto `## Da processare`. Per disiscriverti, cancella la riga del feed.
+
+## Feeds
+
+<!-- Sottoscrizioni a feed RSS/Atom. Esempi:
+- feed: https://www.anthropic.com/news/rss.xml
+- feed: https://simonwillison.net/atom/everything/
+-->
 
 ## Da processare
 
@@ -11,6 +21,6 @@ Formato: una riga per URL, opzionalmente preceduta da `- [ ]`. Una volta process
 - [ ] https://karpathy.github.io/2025/...
 -->
 
-## Processati
+## Elaborati
 
 <!-- popolato automaticamente dal fetcher -->

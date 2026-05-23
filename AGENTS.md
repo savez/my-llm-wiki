@@ -1,423 +1,612 @@
 # LLM Wiki — Second Brain Vault
 
-Questo file definisce lo schema di un vault personale di conoscenza mantenuto da un agente LLM, basato sul pattern _LLM Wiki_ di Karpathy (https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f).
+Vault personale di conoscenza mantenuto da un agente LLM, basato sul pattern _LLM Wiki_ di Karpathy (https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f).
 
-Viene letto da qualsiasi agente che opera sul vault (Claude Code, OpenCode, Codex). Symlink `OPENCODE.md` e altri agent file a questo così tutti seguono le stesse convenzioni.
+Letto da qualsiasi agente che opera sul vault (Claude Code, OpenCode, Codex, Hermes). `CLAUDE.md` e altri agent file sono symlink a questo.
 
-**Principio guida:** `raw/` e `notes/` sono ground truth. `wiki/` è compilato a partire da loro e può essere ricostruito. L'utente cura le fonti, fa domande, guida l'analisi. L'agente legge, sintetizza, mantiene la wiki, e tiene il pensiero in salute nel tempo.
+**Principio guida**: `raw/` e `notes/` sono ground truth. `wiki/` è compilato a partire da loro e può essere ricostruito. Tu curi le fonti, fai domande, guidi l'analisi. L'agente legge, sintetizza, mantiene la wiki, e tiene il pensiero in salute nel tempo.
 
 ---
 
 ## Architettura
 
-Tre piani, separati per regime di mutabilità e ownership:
+Tre piani, separati per regime di mutabilità:
 
-**Raw immutabile** — `raw/`. Popolato da meccanismi automatici (fetcher da `inbox.md`, futuri RSS). L'agente legge ma non scrive, salvo via skill di ingestione automatica. Una volta dentro, immutabile.
-
-**Raw modificabile** — `notes/`. Le tue note grezze, scritte a mano. Sottocartelle libere, contenuto destrutturato, nessun frontmatter richiesto. Scrivi come ti viene. È il tuo lato del vault.
-
-**Wiki sintetizzata** — `wiki/`. L'unico posto che l'agente costruisce attivamente, attingendo da `raw/` e `notes/`. Pages, sources, views, più i file riassuntivi `compass.md`, `hot.md`, `index.md`, `log.md`.
+- **`raw/`** — ground truth immutabile. Popolato da `inbox-fetcher` (URL+RSS da `inbox.md`) o capture manuale (incolla-paste, drop PDF). Dopo l'ingresso non si tocca più.
+- **`notes/`** — tue note grezze, struttura libera. Sottocartelle indicative (`books`, `conferences`, `ideas`, `meetings`, `scratch`, `varie`, `lists`). Scrivi come ti viene.
+- **`wiki/`** — l'unico posto che l'agente costruisce attivamente, attingendo da `raw/` e `notes/`. Contiene `pages/` (concetti), `sources/` (una pagina per file ingerito), `canvas/` (artefatti strutturati: slide, post, timeline...), più `compass.md`, `hot.md`, `index.md`, `log.md`.
 
 Per claim ad alto rischio (numeri, citazioni esatte, fatti legali/medici), risali sempre alla fonte. La wiki sintetizza ma non sostituisce.
 
-**Il vault tratta `raw/` e `notes/` come due ingressi dello stesso pattern.** Stesso meccanismo di sintesi (source page + page concettuale), stesse regole di citazione, stesso strato wiki. L'unica differenza è la mutabilità: `raw/` è immutabile (l'agente sa cosa contiene una volta per tutte), `notes/` è plastica (l'agente tiene traccia dei cambiamenti via hash). Le operazioni INGEST e SYNC sono varianti dello stesso processo, ottimizzate per i due regimi. In futuro, nuove fonti di input (RSS, trascrizioni vocali, email, highlight di ebook) possono plug-in nello stesso pattern senza modifiche architetturali: si aggiunge una cartella in `raw/` o `notes/` e una skill di import, il resto del vault non se ne accorge.
+---
+
+## I 4 verbi
+
+Quello che hai in testa nell'uso quotidiano:
+
+| Verbo | Cosa fai | Cosa fa l'agente |
+|---|---|---|
+| **Aggiungo** | Droppi materiale in `raw/`, scrivi in `notes/`, aggiungi URL/RSS a `inbox.md`. Marchi con `==testo==` ciò che ti colpisce. | Nulla — sono cartelle/file tuoi. |
+| **`/compile`** | Lanci quando vuoi rendere fruibile il nuovo. | Fetch + triage RSS, scan raw+notes, ingest interattivo con takeaway/tag/highlights, aggiorna index+log+hot. |
+| **`/query`** (o domanda naturale) | Chiedi informazioni alla wiki. | Risponde con citazioni; se vale, propone save-back in una page. |
+| **`/canvas`** | Chiedi artefatto strutturato: post LinkedIn, articolo, slide, timeline, comparison, concept-map, chart, report. | Costruisce in `wiki/canvas/<slug>.md` attingendo da pages+sources. |
+
+**Operazioni secondarie** (on-demand, non quotidiane):
+- `/forget <source>` — cascade-removal
+- `/reflect` — riscrive `wiki/compass.md`
+- `/lint` — health check del vault
 
 ---
 
-## Struttura
+## Aggiungo: dove va cosa
 
-```
-inbox.md              coda di URL — tu aggiungi, fetcher elabora
-raw/                  ground truth immutabile
-  papers/             PDF
-  web/<slug>/         articoli web convertiti in markdown
-notes/                tue note grezze, sottocartelle libere
-  meetings/           call, riunioni
-  conferences/        appunti da talk, podcast, video
-  books/              appunti di lettura
-  ideas/              idee di progetto, brainstorm
-  scratch/            zibaldone, pensiero libero
-wiki/
-  pages/              concetti, persone, organizzazioni, progetti
-  sources/            una pagina per file in raw/ o note ingestita
-  views/              timeline, comparison, mappe, slide, post, report
-  compass.md          riflessione strategica (output di /reflect)
-  hot.md              dove eravamo (5-10 righe, riscritte)
-  index.md            catalogo della wiki (English)
-  log.md              registro append-only delle operazioni (English)
-conversations/        trascrizioni salvate con /save
-.lint/report.md       output ultimo lint
-.claude/              skill, slash command, hook (meccanismi)
-```
+### `raw/papers/<slug>.pdf`
+Droppi il PDF. `/compile` lo rileva via sha256, ti chiede di ingerirlo.
 
-Le sottocartelle di `notes/` sono indicative. Aggiungine, rinominale, riorganizzale come ti pare. L'agente scansiona ricorsivamente.
-
----
-
-## Le sette invarianti
-
-Mai violarle.
-
-1. **Mai scrivere in `raw/`.** Solo le skill di fetching automatico possono aggiungere file lì. L'unica eccezione è FORGET, che cancella.
-    
-2. **`notes/` è tuo dominio.** L'agente le legge, le ingerisce, ma non le riscrive né impone struttura. Sono destrutturate per design.
-    
-3. **Ogni claim nella wiki cita una fonte.** Citazione a `raw/...`, `notes/...` o `[[wiki/sources/...]]`. Nessun claim orfano. Le inferenze si marcano `(sintesi — da verificare)`.
-    
-4. **Paraphrase, non copiare.** Riassunti nelle proprie parole. Mai trascrivere blocchi verbatim da fonti, salvo citazione breve esplicita.
-    
-5. **L'utente cura, l'agente mantiene.** Niente ingestione automatica di nuove fonti, niente cambiamenti strutturali senza conferma, niente view create spontaneamente.
-    
-6. **≤15 file toccati per operazione.** Se ne servono di più, fermati e chiedi all'utente cosa contia.
-    
-7. **Aggiorna `index.md` e `log.md` dopo ogni scrittura in `wiki/`.**
-    
-
----
-
-## Lingua
-
-Il vault è bilingue per design.
-
-- **`raw/`** mantiene la lingua originale. Mai tradurre.
-- **`notes/`** segue la tua testa al momento. Nessun vincolo.
-- **`wiki/pages/`, `wiki/sources/`, `wiki/views/`** in **italiano**, indipendentemente dalla lingua delle fonti. Una pagina per concetto/source/view — niente traduzioni parallele. Citazioni verbatim possono restare in lingua originale dentro la prosa italiana, quando le parole esatte contano.
-- **`compass.md`, `hot.md`** in **italiano**.
-- **`index.md`, `log.md`** in **inglese**. Sono metadati operativi, non contenuto. L'inglese li tiene parseable e consistenti.
-- **Risposte in chat** seguono te.
-
----
-
-## Frontmatter
-
-Ogni file in `wiki/` ha frontmatter YAML.
-
-**Pages** (`wiki/pages/`):
+### `raw/web/<slug>/index.md`
+Articoli web. Due strade:
+- **Via inbox-fetcher**: metti URL in `inbox.md`, `/compile` lo scarica.
+- **Capture manuale**: incolli a mano (per contenuti login-walled, thread X, post LinkedIn, email forwardate, highlight ebook). Frontmatter consigliato:
 
 ```yaml
 ---
-type: page
-created: 2026-05-20
-updated: 2026-05-20
-tags: [...]
+source_url: <url o omesso per snippet senza fonte web>
+title: <titolo>
+author: <se noto>
+published: <YYYY-MM-DD se noto>
+fetched: <data cattura>
+fetched_via: trafilatura | playwright | manual
 ---
 ```
 
-**Sources** (`wiki/sources/`):
+Convenzioni per tipologia: vedi **Appendice C**.
 
-```yaml
----
-type: source
-source_path: raw/papers/attention-is-all-you-need.pdf  # oppure notes/...
-created: 2026-05-20
-updated: 2026-05-20
-tags: [...]
-# Solo per source da notes/ versionate:
-supersedes: [[wiki/sources/<slug>-<data-precedente>]]
-superseded_by: null
-last_synced_hash: <hash del contenuto della nota all'ultimo sync>
----
-```
+### `notes/`
+Note libere. Sottocartelle indicative:
+- `notes/meetings/` — call, riunioni
+- `notes/conferences/` — talk, podcast
+- `notes/books/` — lettura
+- `notes/ideas/` — brainstorm, prototipi
+- `notes/scratch/` — zibaldone
+- `notes/varie/` — il resto
+- `notes/lists/` — wishlist (`books-to-read.md`, `articles-to-read.md`, `sites-to-visit.md`, `software-to-try.md`...). `/compile` può auto-spuntare item quando li ingerisci.
 
-**Views** (`wiki/views/`):
+Aggiungi, rinomina, riorganizza come ti pare. L'agente scansiona ricorsivamente.
 
-```yaml
----
-type: view
-kind: timeline | comparison | concept-map | chart | slides | report | post
-shareable: false                # true solo se prodotta per condividere fuori
-created: 2026-05-20
-updated: 2026-05-20
-based_on:
-  - [[wiki/pages/...]]
-  - [[wiki/sources/...]]
-tags: [...]
----
-```
+### `inbox.md`
+Coda di URL e feed RSS. Sezioni `## Da processare`, `## Feeds`, `## Elaborati` (storico con timestamp). Aggiungi tu, `/compile` elabora.
 
-Quando `shareable: true`, la view è **congelata**: l'agente non la modifica più, neanche se le pagine sottostanti cambiano. Quando `shareable: false` (default), la view è viva e può essere rigenerata.
+### Highlights `==testo==`
 
-Le note in `notes/` **non** hanno frontmatter richiesto. SYNC mantiene il tracking della freschezza calcolando l'hash del contenuto e salvandolo nel frontmatter della source page corrispondente (`last_synced_hash`).
-
----
-
-## Le sette operazioni
-
-### FETCH
-
-Trigger: "process inbox", "fetcha inbox".
-
-Esegue la skill `inbox-fetcher`: legge URL da `inbox.md`, scarica le pagine, converte in markdown, salva in `raw/web/<slug>/`. Marca URL come fatti in `inbox.md`. Non ingerisce — solo porta dentro.
-
-### INGEST
-
-Trigger: "ingest X", riferito a un file specifico in `raw/`.
-
-Una fonte alla volta, salvo richiesta esplicita di batch.
-
-1. Leggi la fonte nella sua lingua originale.
-2. Discuti i takeaway con l'utente (in italiano) prima di scrivere.
-3. Crea `wiki/sources/<slug>.md` in italiano. Per default ogni fonte ne ha una; puoi proporre di saltare la source page per fonti marginali (note brevi, post casuali, frammenti) — ma richiede conferma esplicita, e la fonte deve essere citata da almeno una page.
-4. Crea o aggiorna le `wiki/pages/...` rilevanti, in italiano.
-5. Aggiungi `[[wiki-link]]` per connettere il nuovo materiale a ciò che già esiste.
-6. Prima di chiudere, verifica che ogni nuova page abbia almeno un inbound link. Se non ne ha, aggiungilo o segnalala come orphan intenzionale in `log.md`.
-7. Quando una nuova fonte rinforza, indebolisce o contraddice claim esistenti, **non** sovrascrivere silenziosamente: marca la contraddizione esplicitamente, con entrambe le citazioni.
-8. Aggiorna `index.md` e `log.md`.
-9. Ogni claim nella wiki deve essere citato (invariante #3).
-
-Se l'ingest richiederebbe di creare >3 page nuove, fermati e chiedi.
-
-### SYNC
-
-Trigger: "sync notes", "rielabora le note", `/sync`, `/sync --dry-run`.
-
-Operazione gemella di INGEST per `notes/`. Mentre INGEST è mirato su una singola fonte in `raw/`, SYNC è batch su `notes/` con tracking della freschezza.
-
-1. **Scan ricorsivo** di `notes/`, raccogliendo tutti i file `.md`.
-2. Per ogni nota, **calcola l'hash** del contenuto.
-3. **Confronta** con `last_synced_hash` nella source page corrispondente (`wiki/sources/<slug>.md`):
-    - Source page assente → nota mai ingestita → da ingestire.
-    - Hash diverso → nota modificata dopo l'ultimo sync → da reingestire.
-    - Hash uguale → in pari, ignora.
-4. **Riporta sommario all'utente** prima di agire: "Trovate N nuove, M modificate, K in pari. Procedo?"
-5. **Modalità `--dry-run`**: mostra solo il sommario dello step 4 con l'elenco dei file impattati (nuove, modificate con classificazione incrementale/sostanziale prevista, pages potenzialmente impattate). Termina senza scrivere nulla. Utile per vedere "quanto è disallineato il wiki dalle mie note" senza impegno.
-6. Su conferma (in modalità normale), per ogni nota da ingestire:
-    - **Nuova**: crea `wiki/sources/<slug>-<YYYY-MM-DD>.md`, propone aggiornamenti alle pages rilevanti. Aggiorna `last_synced_hash`.
-    - **Modificata**: confronta diff col contenuto precedente.
-        - **Incrementale** (cambiamento minore): aggiorna la source page corrente, aggiorna `last_synced_hash`.
-        - **Sostanziale** (>30% del contenuto, o cambio strutturale): propone versioning. Su conferma, crea nuova source page `<slug>-<YYYY-MM-DD>.md`, marca la vecchia come `superseded_by`, mette la nuova come `supersedes` della vecchia. Identifica le pages che citano la vecchia source e ti segnala "queste pages citano la versione precedente, vuoi rivederle?" — **non riscrivere automaticamente prosa di pages**.
-7. Aggiorna `index.md` (con eventuali entry di versionamento) e `log.md`.
-
-Naming delle source da notes: sempre con data (`progetto-x-2026-05-20.md`), fin dalla prima versione. Naming delle source da `raw/papers/` e `raw/web/`: senza data (`attention-is-all-you-need.md`), perché lì la fonte è davvero immutabile.
-
-### FORGET
-
-Trigger: "forget X", "rimuovi la fonte X", `/forget <source>`.
-
-Cascade-removal di una fonte e tutto ciò che dipendeva solo da lei.
-
-1. Risolvi target: trova `wiki/sources/<slug>.md` e il file in `raw/` o `notes/` puntato da `source_path`.
-2. Grep del vault per ogni riferimento: `[[wiki/sources/<slug>]]`, citazioni del path. Elenca all'utente.
-3. Per ogni `wiki/pages/...` che cita la fonte, decide per claim:
-    - Claim supportato da altre fonti → rimuovi solo questa citazione.
-    - Claim dipendeva solo da questa fonte → proponi di rimuoverlo (o degradarlo a "non verificato"). **Chiedi prima di cancellare prosa.**
-4. Per ogni `wiki/views/...` con la fonte in `based_on`:
-    - `shareable: false` → rigenera o sfoltisci la view.
-    - `shareable: true` → **non toccare**, avverti l'utente che la view ora ha citazioni dangling.
-5. Per source versionate: gestire la catena `supersedes` / `superseded_by`. Se cancelli una versione intermedia, riaggancia i link nelle versioni adiacenti.
-6. Cancella `wiki/sources/<slug>.md` e il file in `raw/` (o `notes/`). Questa è l'unica eccezione all'invariante #1 — l'invariante copre la creazione, non la rimozione user-directed.
-7. Aggiorna `index.md` e `log.md`.
-8. Esegui LINT per confermare zero dead link.
-
-Se la fonte è citata da >15 file, la cascade supera l'invariante #6: fermati, riporta il fanout, lascia che l'utente scelga (cascade su più passi, o lasciare citazioni dangling per il linter).
-
-### QUERY
-
-Trigger: l'utente fa una domanda.
-
-1. **Leggi `wiki/hot.md`** per prima cosa — contesto cheap su dove eravamo rimasti.
-2. Leggi `wiki/index.md` per identificare le pages rilevanti.
-3. **Se esiste una view pertinente in `wiki/views/`, leggila prima** — è una sintesi pre-compilata, spesso più veloce che ricostruire dalle pages.
-4. Leggi le pages e sources rilevanti.
-5. Rispondi usando solo claim tracciabili nel vault. Cita tutto: pages nella risposta in chat, raw nelle pages.
-6. Se il vault non basta, dillo. Non riempire i buchi con training data. Suggerisci quale fonte o search web potrebbe colmare il gap.
-7. Se la risposta è valore durevole, **proponi di salvarla** come nuova page o folded in una esistente (vedi save-back).
-
-### VIEW
-
-Trigger: "fammi una timeline di X", "confronta Y e Z", "butta giù slide su W", `/view`.
-
-Crea un artefatto strutturato in `wiki/views/`. Sette `kind` supportati: `timeline`, `comparison`, `concept-map`, `chart`, `slides`, `report`, `post`.
-
-**Mermaid è il formato preferito per `concept-map`, `timeline` e diagrammi di flusso.** È testo, vive nel markdown, renderizza ovunque, è rigenerabile. Per grafici dati-dense o grafi molto grandi (>30 nodi), valutare alternative (tabella + SVG, o tool esterno).
-
-**Pattern editoriale consigliato.** Per output destinati a condivisione esterna (`post`, `report`, `slides`), il flusso a due stadi rende meglio:
-
-1. Prima costruisci una view di **sintesi interna** (`comparison`, `concept-map`, `timeline`...) con `shareable: false`. Questa è "ho capito il tema".
-2. Poi, da quella, derivi una view di **condivisione** (`post`, `report`). Questa è "ecco come lo racconto fuori".
-
-Per i `kind` orientati alla condivisione (`post`, `report`, `slides`), l'agente chiede esplicitamente se la view nasce già `shareable: true`.
-
-**Citazioni nelle views.** Stesse regole delle pages: ogni claim cita una fonte o una page. Le views non sono prosa libera, sono sintesi derivata. Le citazioni stanno nelle note di accompagnamento, non dentro i diagrammi.
-
-**Struttura tipica di una view:** frontmatter, riassunto in 1-2 righe, artefatto principale (diagramma/tabella/testo), note di lettura con citazioni, sezione "Pagine collegate".
-
-### REFLECT
-
-Trigger: "rifletti sul vault", `/reflect`.
-
-Riscrivi `wiki/compass.md` da zero (non append). Tre sezioni in prosa, in italiano:
-
-1. **Dove sta andando il mio pensiero** (3-5 righe)
-2. **Cosa non sto guardando** (3-5 bullet con link a pages)
-3. **Una domanda su cui vale la pena fermarsi** (una sola, incorporata nella prosa)
-
-Includi nella sezione 2 eventuali problemi strutturali (page duplicate, orphan, view stantie). Se ci sono conversazioni in `conversations/` con insight non ancora filati nel wiki, o note in `notes/ideas/` o `notes/scratch/` con materiale maturo, o views che potrebbero espandere pages, segnalali qui.
-
-### LINT
-
-Trigger: "lint", o auto-trigger dopo 5 ingest / 7 giorni.
-
-Esegui la skill `vault-linter`. Solo check deterministici:
-
-- dead link (`[[...]]` che non risolve)
-- frontmatter mancante o malformato in `wiki/`
-- naming inconsistente
-- views stantie (`based_on` punta a pages aggiornate dopo la view)
-- pages orphan (zero inbound link)
-- concetti citati in pages ma senza page propria
-- claim potenzialmente outdated alla luce di fonti più recenti
-- cross-reference mancanti
-
-Output in `.lint/report.md`. **Mai auto-fix.** Riporta come lista numerata con fix suggeriti. Append `## [data] lint | wiki-health` a `log.md`.
-
----
-
-## Hot cache
-
-A fine sessione, se abbiamo toccato contenuto significativo, aggiorna `wiki/hot.md` con 5-10 righe: cosa abbiamo coperto, cosa è rimasto aperto, da dove riprendere. **Riscrivi, non aggiungere.** A inizio sessione, l'agente legge `wiki/hot.md` per primo.
-
----
-
-## Save-back workflow
-
-Quando una risposta in chat vale la pena di essere salvata:
-
-1. L'agente propone target — nuova page o page esistente in cui integrarla.
-2. Su conferma, scrivi/aggiorna la page seguendo il page format.
-3. Cita le pages e le raw/notes da cui la risposta ha attinto.
-4. Aggiorna `index.md` se è nata una nuova page.
-5. Append entry `query` a `log.md`.
-
-Questo è ciò che fa compoundare l'esplorazione insieme all'ingest.
-
----
-
-## Page format
-
-Le pages in `wiki/pages/` seguono questo schema (in italiano):
+Sintassi unica per marcare passaggi importanti, valida ovunque (raw/web/, notes/):
 
 ```markdown
+Il punto centrale è che ==l'attenzione è tutto ciò di cui hai bisogno==
+e questo cambia il paradigma. Poi nota che ==i transformer scalano meglio==.
+```
+
+Durante `/compile`, l'agente estrae tutti i match `==(.+?)==`, assegna ID stabili (`H1`, `H2`...), e li promuove nella **source page** sotto sezione `## Highlights`. Le page concettuali possono citarli puntualmente: `[[wiki/sources/articolo#H2]]`.
+
+Il `raw/` non viene mai modificato dall'estrazione (invariante #1).
+
+---
+
+## `/compile`
+
+Comando unico per rendere fruibile tutto il materiale nuovo. Quattro fasi sequenziali, interattive.
+
+### Fase 1 — Fetch (auto)
+
+```
+$ /compile
+
+[fetch] inbox.md: 2 nuovi URL → raw/web/
+[fetch] RSS: 8 nuovi item, triage:
+
+  1. [hacker-news] LLM agents in production (Anthropic)
+     Summary: How three patterns make agents work in prod…
+  2. [hacker-news] Why Postgres beats MongoDB again
+     Summary: A long-time DBA's take on document stores…
+  3. [paul-graham] Working on hard problems
+     Summary: Essay on choosing what to work on…
+  ...
+
+Quali fetch full? (numeri / 'all' / 'none')
+> 1, 3
+```
+
+Triage RSS = scelta su title + feed-summary, senza scraping aggressivo. Solo i selezionati vengono scaricati full in `raw/web/`. Gli scartati restano dedupati in `.config-llm/state/feeds.json` come "seen" e non riappaiono.
+
+### Fase 2 — Scan
+
+Computa sha256 di tutto `raw/` + `notes/`, classifica:
+
+- **NEW** — nessuna source page esistente
+- **MODIFIED** — hash diverso da `content_hash` registrato
+- **SYNC** — hash uguale (skip, bump `last_checked`)
+- **DRIFT** — source page esiste ma `source_path` non risolve
+
+Mostra manifest **prima di toccare nulla**:
+
+```
+[scan]
+  NEW       6 file
+            ├─ raw/web/articolo-debian/index.md
+            ├─ raw/web/llm-agents/index.md
+            └─ ...
+  MODIFIED  2 file
+            ├─ notes/ideas/canvas-builder.md   (incrementale ~8%)
+            └─ notes/projects/sal-q3.md         (sostanziale ~45%)
+  SYNC      143 file (skip)
+  DRIFT     0
+
+Procedo con ingest interattivo? [y/n]
+```
+
+Se NEW + MODIFIED > 15 si ferma e chiede come segmentare (invariante #3).
+
+### Fase 3 — Ingest interattivo
+
+Loop per ogni item NEW + MODIFIED. **Uno alla volta**. Lo step è dialogico: l'agente mostra cosa ha capito, tu correggi se serve.
+
+```
+─────────────────────────────────────────────
+[1/8] NEW · raw/web/articolo-debian/index.md
+  Titolo: Il progetto Debian non accetterà più pacchetti non riproducibili
+  Autore: miamammausalinux | Published: 2026-05-20
+  Lingua: it | Length: ~1200 parole
+  Highlights trovati: 3
+    H1: "la riproducibilità è la base della supply-chain trust"
+    H2: "ogni pacchetto deve essere bit-per-bit identico se ricompilato"
+    H3: "i maintainer hanno tempo fino a fine 2026"
+
+  Takeaway (mia lettura):
+  • Debian attiva un policy gate: pacchetti non bit-per-bit
+    riproducibili vengono bloccati da testing.
+  • Motivazione esplicita: hardening della supply-chain.
+  • I maintainer hanno deadline fine 2026.
+
+  Tag proposti: debian, supply-chain, reproducible-builds, security
+  kind: reading
+
+  Pages candidate:
+    [[debian]]         (esistente, aggiungo riferimento)
+    [[supply-chain]]   (nuova, creo se confermi)
+
+  Azione? [ingest / skip / edit-tags / show-content / forget]
+> ingest
+```
+
+Il **takeaway** è uno step esplicito e non opzionale: l'agente dichiara cosa ha capito prima di proporre tag e pages. Tu correggi a voce o con `edit-tags` / `show-content`. È la differenza tra ingest meccanico e ingest dialogico.
+
+**Comandi disponibili a ogni item**:
+- `ingest` — procedi con takeaway/tag/pages proposti.
+- `skip` — non ingerire ora; il file resta dove sta, riproposto al prossimo `/compile`.
+- `edit-tags` — modifichi tag/kind/pages prima di confermare.
+- `show-content` — mostra il contenuto del file.
+- `forget` — cancella il file in raw (solo per RSS finiti per errore).
+
+**Per MODIFIED sostanziali** (≥30% diff o cambio di heading top-level), step extra:
+
+```
+[3/8] MODIFIED · notes/projects/sal-q3.md (substantial, ~45%)
+  Diff: 12 heading nuovi, 3 rimossi
+  Source page corrente: sal-q3-2026-04-10.md
+
+  Azione? [version / overwrite / skip / show-diff]
+> version
+  → Creo sal-q3-2026-05-23.md, marco supersedes/superseded_by.
+  → Le pages [[lavoro-sal]] e [[okr-q3]] citavano la versione precedente.
+    Le flaggo per review? [y/n]
+> y
+```
+
+**Mai riscrittura automatica della prosa di pages**. L'agente flagga, tu rivedi.
+
+Atomico per item: errore in mezzo non lascia stato inconsistente, l'item fallito viene riportato al wrap-up.
+
+### Fase 4 — Wrap-up
+
+```
+[done]
+  Ingerite: 5 nuove fonti, 2 modificate (1 versioned)
+  Pages: 3 create, 7 aggiornate
+  Highlights estratti: 14
+  Liste: articles-to-read.md aggiornata (1 item spuntato)
+
+  index.md, log.md, hot.md aggiornati.
+
+  Ultimo LINT 6 giorni fa, suggerisco /lint. [y/n]
+```
+
+**Auto-tick liste**: per ogni fonte ingerita, l'agente cerca match in `notes/lists/*.md` per URL (preferito) o titolo (fuzzy, threshold 0.85). Su match propone `[ ]` → `[x]`. Mai automatico, sempre conferma.
+
+### Opzioni
+
+- `/compile --dry-run` — esegue Fase 1+2, mostra manifest, esce senza scrivere.
+- `/compile --from <path>` — ingest puntuale su una singola fonte, salta scan generale.
+
+---
+
+## `/query`
+
+Domanda naturale o slash:
+
+1. Legge `wiki/hot.md` (dove eravamo).
+2. Legge `wiki/index.md` per identificare le pages rilevanti.
+3. Se esiste un canvas pertinente in `wiki/canvas/`, lo legge — è sintesi pre-compilata, spesso più veloce.
+4. Risponde usando solo claim tracciabili nel vault. Cita pages nella chat, raw/notes nelle pages.
+5. Se il vault non basta, lo dice. Non riempie i buchi con training data.
+6. Se la risposta vale, propone save-back come page nuova o folded in una esistente.
+
+---
+
+## `/canvas`
+
+Crea un artefatto strutturato in `wiki/canvas/`. Sette `kind`: `timeline`, `comparison`, `concept-map`, `chart`, `slides`, `report`, `post`.
+
+**Mermaid** è il formato preferito per `concept-map`, `timeline`, diagrammi di flusso. È testo, vive nel markdown, renderizza ovunque, è rigenerabile.
+
+**Pattern editoriale a due stadi** (consigliato per output destinati a condivisione esterna):
+1. Sintesi interna (`comparison`, `concept-map`, `timeline`) con `shareable: false`. È "ho capito il tema".
+2. Output di condivisione (`post`, `report`, `slides`) derivata dalla prima. È "ecco come lo racconto fuori".
+
+Per i kind orientati alla condivisione, l'agente chiede se la canvas nasce già `shareable: true`. Quando `shareable: true`, la canvas è **congelata**: non viene rigenerata anche se le pages sottostanti cambiano.
+
+**Citazioni nelle canvas**: stesse regole delle pages. Ogni claim cita una fonte o una page. Le citazioni stanno nelle note di accompagnamento, non dentro i diagrammi.
+
+---
+
+## Wiki structure
+
+Tre tipi di file in `wiki/`. Ognuno ha frontmatter YAML.
+
+### Page (`wiki/pages/`)
+
+```yaml
 ---
 type: page
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
-tags: [...]
+created: 2026-05-23
+updated: 2026-05-23
+tags: [free, tags, here]    # tag liberi, vedi Appendice A per taxonomy opzionale
+kind: concept                # opzionale: concept|tool|person|org|project|method|event|decision|reading
 ---
 
-# Titolo della pagina
+# Titolo
 
-**Riassunto**: una o due frasi che descrivono questa pagina.
+**Riassunto**: 1-2 frasi.
 
-**Fonti**: elenco dei file in `raw/` o `notes/` da cui questa pagina
-trae informazioni, o link a `[[wiki/sources/...]]`.
+**Fonti**: elenco dei file in `raw/` o `notes/` o link `[[wiki/sources/...]]`.
 
 **Ultimo aggiornamento**: YYYY-MM-DD.
 
 ---
 
-Contenuto principale. Titoli chiari, paragrafi brevi.
-
-Collegare i concetti con [[wiki-link]] all'interno del testo.
+Contenuto principale. Collega concetti con [[wiki-link]].
 
 ## Pagine collegate
 
 - [[concetto-collegato-1]]
-- [[concetto-collegato-2]]
 ```
 
-Source page (`wiki/sources/`) e view (`wiki/views/`) seguono lo stesso schema, con frontmatter specifico per il loro `type`. Synthesis, comparison, decision pages possono divergere dove la struttura non si adatta — ma mantengono `Riassunto`, `Fonti`, `Ultimo aggiornamento`, `Pagine collegate`.
+### Source (`wiki/sources/`)
 
+```yaml
+---
+type: source
+source_path: raw/web/articolo-debian/index.md
+content_hash: a3f5...
+ingested: 2026-05-23
+last_checked: 2026-05-23
+tags: [debian, supply-chain]
+supersedes: null              # opzionale, default null
+superseded_by: null           # opzionale, default null
 ---
 
-## Citazioni
+# Titolo (in italiano)
 
-- Ogni claim fattuale in una page cita la sua fonte.
-- Formato per fonti raw: `(fonte: raw/papers/nome.pdf)` o `(fonte: raw/web/<slug>/index.md)`.
-- Formato per note: `(fonte: notes/meetings/2026-05-20-acme.md)`.
-- Formato per source page: `[[wiki/sources/<slug>]]`.
+**Riassunto**: 1-2 frasi sulla fonte.
+
+**Fonti**: path raw o note originale.
+
+## Highlights
+
+- **H1**: "passaggio importante 1"
+- **H2**: "passaggio importante 2"
+- **H3**: "passaggio importante 3"
+
+## Sintesi
+
+Prosa in italiano. Citazioni inline per claim specifici.
+```
+
+Naming source:
+- Da `raw/papers/` o `raw/web/`: senza data (`attention-is-all-you-need.md`) — la fonte è davvero immutabile.
+- Da `notes/`: con data (`progetto-x-2026-05-20.md`) fin dalla prima versione — la nota può evolvere.
+
+### Canvas (`wiki/canvas/`)
+
+```yaml
+---
+type: canvas
+kind: post | slides | report | timeline | comparison | concept-map | chart
+shareable: false                # true = congelata
+created: 2026-05-23
+updated: 2026-05-23
+based_on:
+  - [[wiki/pages/debian]]
+  - [[wiki/sources/articolo-debian]]
+tags: [debian, supply-chain]
+---
+```
+
+### Lingua
+
+- `raw/` lingua originale. **Mai tradurre**.
+- `notes/` segue te.
+- `wiki/pages/`, `wiki/sources/`, `wiki/canvas/` in **italiano**. Citazioni verbatim possono restare in lingua originale dentro prosa italiana.
+- `compass.md`, `hot.md` in **italiano**.
+- `index.md`, `log.md` in **inglese** (metadati operativi).
+- Risposte in chat seguono te.
+
+### Citazioni
+
+Ogni **claim fattuale, numerico, citazione testuale, o conclusione specifica** cita inline. Frasi di sintesi che riassumono materiale citato altrove nella stessa page **non richiedono citazione duplicata** se la sezione `Fonti` in alto è completa.
+
+- Per fonti raw: `(fonte: raw/papers/nome.pdf)` o `(fonte: raw/web/<slug>/index.md)`.
+- Per note: `(fonte: notes/meetings/2026-05-20-acme.md)`.
+- Per source page: `[[wiki/sources/<slug>]]` o `[[wiki/sources/<slug>#H2]]` per highlight specifico.
 - Per inferenze senza fonte diretta: `(sintesi — da verificare)`.
 - Se due fonti disagree, marca la contraddizione con entrambe le citazioni.
-- In chat (in italiano), cita pages. Nelle pages, cita raw o notes.
 
 ---
 
-## Indexing e logging
+## Tracciamento freschezza
 
-**`wiki/index.md`** — content-oriented. Lista le pages per categoria con descrizione one-line, in inglese. Aggiornato a ogni ingest e save-back. Esempio:
+Principio: **la source page è il registro**. Niente file di stato extra. Se esiste `wiki/sources/<slug>.md` con `source_path: raw/web/articolo/index.md`, allora quella fonte è ingerita.
+
+### Stati durante `/compile` scan
+
+- **NEW**: nessuna source page → da ingerire.
+- **SYNC**: hash uguale a `content_hash` → ignora (bump `last_checked`).
+- **MODIFIED incrementale** (<30% diff, no cambio heading top): update in place, bump `content_hash`, aggiorna page citanti se highlights cambiati.
+- **MODIFIED sostanziale** (≥30% o cambio heading top): propone versioning. Crea `<slug>-<YYYY-MM-DD>.md`, marca `supersedes`/`superseded_by`. Pages citanti vengono flaggate per review, **mai riscritte automaticamente**.
+- **DRIFT**: source page esiste ma `source_path` non risolve. Segnala, propone `/forget` o re-link.
+
+### LINT come safety net
+
+`/lint` ricomputa `content_hash` su tutti i source files, segnala drift silenzioso (raw modificato a mano fuori da `/compile`), source page con `source_path` mancante, `supersedes`/`superseded_by` asimmetrici, highlights drift. Sempre report → tu decidi. **Mai auto-fix**.
+
+---
+
+## Le 4 invarianti
+
+Mai violarle.
+
+1. **`raw/` è immutabile dopo l'ingresso.** Eccezioni: normalizzazione frontmatter alla prima ingestione, `/forget` user-directed.
+2. **Claim fattuali, numerici, e citazioni testuali tracciano la fonte inline.** Sintesi possono fare riferimento alla sezione `Fonti` della page.
+3. **≤15 file toccati per operazione.** Oltre → ferma e chiedi.
+4. **Aggiorna `index.md` e `log.md` dopo ogni scrittura in `wiki/`.**
+
+---
+
+## Operazioni secondarie
+
+### `/forget <source>`
+
+Cascade-removal di una fonte e tutto ciò che dipendeva solo da lei.
+
+1. Risolve target: `wiki/sources/<slug>.md` e il file in `raw/` o `notes/`.
+2. Grep per ogni riferimento. Elenca all'utente.
+3. Per ogni `wiki/pages/` che cita: claim supportato da altre fonti → rimuove solo la citazione; claim mono-fonte → propone rimozione o degrade a "non verificato". **Chiede prima di cancellare prosa.**
+4. Per ogni canvas con la fonte in `based_on`: `shareable: false` → rigenera; `shareable: true` → non tocca, avverte di citazioni dangling.
+5. Per source versionate: gestisce catena `supersedes`/`superseded_by`.
+6. Cancella `wiki/sources/<slug>.md` e il file in raw/notes. Unica eccezione all'invariante #1.
+7. Aggiorna `index.md` e `log.md`.
+
+Se la fonte è citata da >15 file, supera l'invariante #3: ferma, riporta fanout, tu scegli.
+
+### `/reflect`
+
+Riscrive `wiki/compass.md` da zero. Tre sezioni in italiano:
+1. **Dove sta andando il mio pensiero** (3-5 righe)
+2. **Cosa non sto guardando** (3-5 bullet con link a pages)
+3. **Una domanda su cui vale la pena fermarsi** (una sola)
+
+Include problemi strutturali (page duplicate, orphan, canvas stantie), insight in `conversations/` non ancora filati, note mature in `notes/ideas/` o `notes/scratch/`.
+
+### `/lint`
+
+Skill `vault-linter`. Solo check deterministici, **mai auto-fix**.
+
+- Dead link, frontmatter malformato, naming inconsistente.
+- Canvas stantie (`based_on` punta a pages aggiornate dopo la canvas).
+- Pages orphan (zero inbound link).
+- Concetti citati ma senza page propria.
+- Claim potenzialmente outdated alla luce di fonti più recenti.
+- Drift `content_hash` (raw modificato fuori da `/compile`).
+- `supersedes`/`superseded_by` asimmetrici.
+- Highlights drift (`==X==` nel raw non corrisponde a `H<n>` nella source page).
+- Tag drift su varianti (claude-code vs claudecode vs Claude-Code → warning).
+- Log rotation soglia (>500 entry → propone rotation).
+
+Output in `.lint/report.md`. Append `## [data] lint | wiki-health` a `log.md`.
+
+**Trigger**: on-demand, oppure suggerito da `/compile` se ultimo LINT > 7 giorni.
+
+---
+
+## Hot cache, compass, log, index
+
+### `wiki/hot.md`
+5-10 righe: cosa abbiamo coperto, cosa è rimasto aperto, da dove riprendere. **Riscritto, non aggiunto**. Aggiornato a fine `/compile` o fine sessione significativa. A inizio sessione, l'agente lo legge per primo.
+
+### `wiki/compass.md`
+Output di `/reflect`. Riflessione strategica. Riscritto da zero ogni volta.
+
+### `wiki/index.md`
+Content-oriented, inglese. Lista pages/sources/canvas per categoria con descrizione one-line. Aggiornato a ogni scrittura in `wiki/`.
 
 ```markdown
 # Wiki Index
 
 ## Concepts
 - [[transformer]] — Self-attention architecture
-- [[mixture-of-experts]] — Sparse expert routing in large models
+- [[mixture-of-experts]] — Sparse expert routing
 
 ## Models
 - [[claude-opus-4-7]] — Anthropic's flagship as of 2026
 
 ## Sources (notes)
 - [[progetto-x-2026-05-20]] — Project X idea, v2 (supersedes 2026-03-15)
-- [[progetto-x-2026-03-15]] — Project X idea, v1
 ```
 
-**`wiki/log.md`** — chronological, append-only, in inglese. Cattura ingest, save-back da query, sync, forget, lint. Formato heading consistente:
+### `wiki/log.md`
+Chronological, append-only, inglese. Una entry per operazione.
 
 ```markdown
-## [2026-05-20] ingest | attention-is-all-you-need
-## [2026-05-20] sync   | progetto-x v2 (supersedes v1)
-## [2026-05-20] query  | rag-vs-long-context-tradeoffs
-## [2026-05-20] view   | agent-architectures-map
-## [2026-05-20] forget | obsolete-paper-xyz
-## [2026-05-20] lint   | wiki-health-check
+## [2026-05-23] ingest | articolo-debian
+source: raw/web/articolo-debian/index.md
+content_hash: a3f5...
+highlights: 3
+pages: [[debian]] (created), [[supply-chain]] (updated)
+
+## [2026-05-23] sync   | canvas-builder (incremental, 8%)
+## [2026-05-23] query  | rag-vs-long-context-tradeoffs
+## [2026-05-23] canvas | agent-architectures-map
+## [2026-05-23] forget | obsolete-paper-xyz
+## [2026-05-23] lint   | wiki-health-check
 ```
 
-Una riga di dettaglio sotto ogni heading. Parseable con `grep "^## \[" wiki/log.md | tail -10`.
+Parseable: `grep "^## \[" wiki/log.md | tail -10`.
+
+**Rotation**: quando supera 500 entry (`grep -c "^## \[" wiki/log.md`), `/lint` segnala. Con conferma utente: rinomina `log.md` → `log-YYYY.md`, crea nuovo `log.md`, prima entry `## [data] rotate | logs archived to log-YYYY.md`. Logs ruotati restano per sempre. **Nessun auto-rotate**.
 
 ---
 
 ## Modalità unattended
 
-Quando l'agente è invocato con `--unattended`, `VAULT_UNATTENDED=1`, o la parola "unattended" nel prompt:
+Quando l'agente è invocato con `--unattended`, `VAULT_UNATTENDED=1`, o "unattended" nel prompt:
 
-**Permesso:** leggere qualunque cosa, eseguire LINT, eseguire REFLECT, aggiornare `wiki/compass.md`, `hot.md`, `log.md`, `.lint/report.md`.
+**Permesso**: leggere qualunque cosa, eseguire `/lint`, eseguire `/reflect`, aggiornare `compass.md`, `hot.md`, `log.md`, `.lint/report.md`.
 
-**Non permesso:** ingest, sync, forget, creare views, modificare `wiki/pages/`, cancellare nulla da `raw/` `notes/` o `wiki/sources/`, applicare qualsiasi cambiamento strutturale. Le proposte restano proposte finché l'utente non conferma interattivamente.
+**Non permesso**: ingest, sync, forget, creare canvas, modificare `wiki/pages/`, cancellare nulla da `raw/`/`notes/`/`wiki/sources/`, applicare cambiamenti strutturali. Le proposte restano proposte finché tu non confermi.
 
 ---
 
 ## Slash command
 
-- `/save [nome]` — salva la conversazione corrente in `conversations/`
-- `/sync` — esegui SYNC su `notes/`
-- `/sync --dry-run` — mostra cosa farebbe SYNC senza scrivere nulla
-- `/view [kind] [topic]` — costruisci una view (vedi VIEW)
-- `/reflect` — produci `compass.md` (vedi REFLECT)
-- `/forget <source>` — cascade-removal (vedi FORGET)
+- `/compile` — fetch + scan + ingest interattivo
+- `/compile --dry-run` — solo manifest, niente scritture
+- `/compile --from <path>` — ingest puntuale
+- `/query` (o domanda naturale) — domanda alla wiki
+- `/canvas [kind] [topic]` — costruisce artefatto
+- `/forget <source>` — cascade-removal
+- `/reflect` — produce `compass.md`
+- `/lint` — health check
+- `/save [nome]` — salva conversazione corrente in `conversations/`
 
-Per il resto, linguaggio naturale. Niente comando per "trovami altri URL su X" — basta chiedere.
+Per il resto, linguaggio naturale.
 
 ---
 
-## Regole operative
+## Invocazione skill
 
-- **Mai modificare nulla in `raw/`.**
-- **Mai imporre struttura a `notes/`.** Le note sono tue, destrutturate.
-- **Sempre aggiornare `wiki/index.md` e `wiki/log.md`** dopo scritture in `wiki/`.
-- **Sempre leggere `wiki/hot.md` e `wiki/index.md` prima** di una query o un'operazione di mantenimento.
-- Nomi delle page lowercase con trattini: `mixture-of-experts.md`.
-- Preferire aggiornare una page esistente piuttosto che crearne una quasi-duplicata.
-- Lingua chiara, plain. Non inventare fatti per far sentire la wiki completa.
-- Quando incerto su come categorizzare qualcosa, chiedi.
-- Mantenere questo schema pratico. Aggiornarlo quando il workflow matura.
+Le skill vivono in `.config-llm/skills/<name>/`. Ogni skill ha:
+
+- `SKILL.md` — frontmatter (`name`, `description`) + istruzioni
+- `scripts/` — script Python eseguibili dalla root del vault
+- eventuali `templates/`, `assets/`
+
+Catalogo in `.config-llm/skills/INDEX.md`. Skill correnti:
+
+| name | trigger | docs |
+|---|---|---|
+| compile | `/compile`, "compila", "ingest il nuovo" | [SKILL.md](.config-llm/skills/compile/SKILL.md) |
+| inbox-fetcher | (sotto-step di /compile) | [SKILL.md](.config-llm/skills/inbox-fetcher/SKILL.md) |
+| canvas-builder | `/canvas`, "fammi una timeline/post/slide di X" | [SKILL.md](.config-llm/skills/canvas-builder/SKILL.md) |
+| vault-linter | `/lint`, "controlla il vault" | [SKILL.md](.config-llm/skills/vault-linter/SKILL.md) |
+
+Il vault è **agent-agnostic per design**. Protocollo a 3 step per ogni agente:
+1. Riconosce il trigger naturale.
+2. Legge `.config-llm/skills/<name>/SKILL.md`.
+3. Esegue lo script associato via shell, dalla root del vault.
+
+Tutti gli script accettano `--vault <path>` (default: cwd) e dove ha senso `--dry-run`.
 
 ---
 
 ## Quando in dubbio
 
-- Se una regola crea frizione, **proponi una modifica all'utente**. Non emendare silenziosamente questo file.
+- Se una regola crea frizione, **proponi una modifica** all'utente. Non emendare silenziosamente questo file.
 - Se non riesci a tracciare un claim a una fonte, non farlo.
 - Se stai per creare >3 pages o toccare >15 file, fermati e chiedi.
 - Se l'utente sta andando controcorrente rispetto al vault, segnalalo con tatto.
 
 Tieni il vault onesto. Tienilo piccolo. Tienilo utile.
+
+---
+
+## Appendice A — Tag taxonomy estesa (opzionale)
+
+Default: **tag liberi**. Nessun namespace obbligatorio.
+
+Se vuoi disciplina maggiore per ricerche affidabili, due namespace opzionali:
+
+**topic:** — di cosa tratta
+- `topic:ai`, `topic:dev`, `topic:devtools`, `topic:cloud`, `topic:security`, `topic:health`, `topic:business`, `topic:productivity`, `topic:learning`, `topic:personal`
+
+**kind:** — che tipo di pagina è (può anche essere un campo top-level del frontmatter, non solo un tag)
+- `concept`, `tool`, `person`, `org`, `project`, `method`, `event`, `decision`, `reading`
+
+Aggiungere namespace nuovi: edita questa appendice prima di usarli. LINT segnala namespace fuori taxonomy solo se l'utente ha attivato il check (off di default).
+
+---
+
+## Appendice B — Frontmatter avanzato (opzionale)
+
+Campi opzionali per pages che vuoi marcare con quality signals:
+
+```yaml
+---
+type: page
+# ...
+confidence: high | medium | low    # quanto sono supportati i claim
+contested: true                    # ci sono contraddizioni irrisolte
+contradictions: [other-page-slug]  # pages in conflitto con questa (reciproco)
+---
+```
+
+Settali quando: topic veloci, opinion-heavy, claim mono-fonte. Non marcare `confidence: high` salvo claim supportati da ≥2 fonti indipendenti. LINT lista pages con `confidence: low` o `contested: true` per review periodica.
+
+Versioning note (in source page da `notes/`):
+
+```yaml
+supersedes: [[wiki/sources/<slug>-<data-precedente>]]
+superseded_by: null
+```
+
+`/compile` gestisce la catena automaticamente quando una nota cambia in modo sostanziale.
+
+---
+
+## Appendice C — Capture manuale per tipologia
+
+Per contenuto non fetchabile da `inbox-fetcher` (post privati, thread X copiati, articoli paywall, email forwardate, snippet da chat, highlight ebook):
+
+1. Crea `raw/web/<slug>/` con slug lowercase-hyphens.
+2. Crea `raw/web/<slug>/index.md` col contenuto. Frontmatter base (vedi § Aggiungo → raw/web).
+3. (Opzionale) Immagini in `raw/web/<slug>/assets/`.
+4. Esegui `/compile` o `/compile --from raw/web/<slug>/index.md`.
+
+**Convenzioni per tipologia**:
+
+- **Thread X/Twitter**: paste con `> @handle:` come prefisso per ogni tweet, ordine cronologico. `source_url` = URL del root tweet.
+- **Post LinkedIn / Facebook / Instagram / Threads**: paste integrale, `source_url` se accessibile.
+- **Articolo paywall**: preferire `Riassunto + key quotes` rispetto a copia integrale (fair-use). `source_url` originale.
+- **Email forwardata**: paste corpo, `source_url` omesso, `author` = mittente.
+- **Highlight ebook (Kindle, Apple Books)**: paste come quote-blocks, `author` = autore libro, `source_url` omesso o link store.
+
+**PDF scaricati a mano**: drop in `raw/papers/<slug>.pdf`. Niente frontmatter (è binario); `/compile` calcola comunque `content_hash` e crea la source page.
+
+Dopo il primo `/compile`, il file in `raw/` è immutabile come il resto.

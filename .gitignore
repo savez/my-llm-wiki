@@ -15,3 +15,6 @@
 # Local env
 .env
 .env.local
+
+# Local alias for AGENTS.md
+CLAUDE.md
